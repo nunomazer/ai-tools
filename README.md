@@ -6,7 +6,7 @@ Collection of tools and utilities for AI coding agents and IDEs.
 
 | Tool | Agent/IDE | Description |
 |------|-----------|-------------|
-| [claude-statusline](claude-statusline/) | Claude Code | Custom two-line status line with session info, token usage, and quota monitoring |
+| [claude-statusline](claude-statusline/) | Claude Code | Custom two-line status line with session info, token usage, and quota monitoring. Multi-account aware via `CLAUDE_CONFIG_DIR` |
 
 ## Installation
 
