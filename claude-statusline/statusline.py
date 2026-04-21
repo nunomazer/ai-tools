@@ -5,6 +5,7 @@ Line 1: model · effort · dir · git · context · api time · cost · lines
 Line 2: quota bars — 5h · 7d · per-model · extra usage
 """
 
+import hashlib
 import io
 import json
 import os
@@ -32,12 +33,25 @@ EMPTY = "░"
 SEP   = f" {DIM}·{RESET} "
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CACHE_DIR = Path("/tmp/claude-statusline-cache")
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-CREDENTIALS_FILE = Path.home() / ".claude" / ".credentials.json"
-USAGE_URL       = "https://api.anthropic.com/api/oauth/usage"
-QUOTA_CACHE_TTL = 60   # seconds — back off from API
+def get_config_dir() -> Path:
+    """Resolve the active Claude config dir (per-account when CLAUDE_CONFIG_DIR is set)."""
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(env) if env else Path.home() / ".claude"
+
+
+def get_cache_dir() -> Path:
+    """Per-account cache dir so concurrent sessions on different accounts don't collide."""
+    account_id = hashlib.sha1(str(get_config_dir()).encode()).hexdigest()[:12]
+    d = Path("/tmp/claude-statusline-cache") / account_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+CACHE_DIR        = get_cache_dir()
+CREDENTIALS_FILE = get_config_dir() / ".credentials.json"
+USAGE_URL        = "https://api.anthropic.com/api/oauth/usage"
+QUOTA_CACHE_TTL  = 60   # seconds — back off from API
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -241,6 +255,36 @@ def get_quota() -> dict | None:
     return None
 
 
+def quota_from_input(data: dict) -> dict | None:
+    """
+    Build a minimal quota dict from the session's rate_limits input.
+
+    Used as a last-resort fallback when the API is unreachable and no cache
+    exists — the shape mirrors what fetch_usage_api() returns so build_line2
+    can consume either source uniformly.
+    """
+    rl = data.get("rate_limits") or {}
+    if not rl:
+        return None
+    result: dict = {}
+    for key in ("five_hour", "seven_day"):
+        entry = rl.get(key)
+        if not entry:
+            continue
+        resets_at = entry.get("resets_at")
+        iso = ""
+        if resets_at:
+            try:
+                iso = datetime.fromtimestamp(int(resets_at), tz=timezone.utc).isoformat()
+            except (ValueError, TypeError, OSError):
+                iso = ""
+        result[key] = {
+            "utilization": entry.get("used_percentage", 0),
+            "resets_at":   iso,
+        }
+    return result or None
+
+
 # ── Lines ─────────────────────────────────────────────────────────────────────
 
 def build_line1(data: dict) -> str:
@@ -344,7 +388,7 @@ def main() -> None:
     data  = read_json_input()
     # Save input for debugging
     (CACHE_DIR / "debug_input.json").write_text(json.dumps(data, indent=2))
-    quota = get_quota()
+    quota = get_quota() or quota_from_input(data)
     print(build_line1(data))
     print(build_line2(quota))
 

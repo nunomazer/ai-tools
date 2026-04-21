@@ -3,11 +3,29 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATUSLINE="$SCRIPT_DIR/statusline.py"
-CLAUDE_DIR="$HOME/.claude"
-WRAPPER="$CLAUDE_DIR/statusline-wrapper.sh"
-SETTINGS="$CLAUDE_DIR/settings.json"
+
+# When CLAUDE_CONFIG_DIR is set, settings.json lives there and the wrapper
+# is named per-account so concurrent accounts don't overwrite each other.
+# Wrappers always live in ~/.claude/ because it's a stable, shared location
+# (the Linux home is per-user, while CLAUDE_CONFIG_DIR may point anywhere,
+# including cloud-synced folders where exec perms can be flaky).
+WRAPPER_DIR="$HOME/.claude"
+
+if [ -n "$CLAUDE_CONFIG_DIR" ]; then
+    CONFIG_DIR="$CLAUDE_CONFIG_DIR"
+    ACCOUNT_SLUG="$(basename "$CLAUDE_CONFIG_DIR")"
+    WRAPPER="$WRAPPER_DIR/statusline-wrapper-$ACCOUNT_SLUG.sh"
+else
+    CONFIG_DIR="$HOME/.claude"
+    WRAPPER="$WRAPPER_DIR/statusline-wrapper.sh"
+fi
+
+SETTINGS="$CONFIG_DIR/settings.json"
 
 echo "=== Claude Statusline Installer ==="
+echo "Config dir: $CONFIG_DIR"
+echo "Wrapper:    $WRAPPER"
+echo "Statusline: $STATUSLINE"
 echo ""
 
 # Check dependencies
@@ -16,10 +34,10 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-# Ensure ~/.claude exists
-mkdir -p "$CLAUDE_DIR"
+mkdir -p "$WRAPPER_DIR"
+mkdir -p "$CONFIG_DIR"
 
-# Create wrapper script (handles paths with spaces)
+# Create wrapper script (keeps invocation tidy even when STATUSLINE has spaces)
 cat > "$WRAPPER" << EOF
 #!/bin/bash
 exec python3 "$STATUSLINE"
@@ -27,38 +45,31 @@ EOF
 chmod +x "$WRAPPER"
 echo "Created wrapper: $WRAPPER"
 
-# Update settings.json
-if [ -f "$SETTINGS" ]; then
-    # Check if statusLine already configured
-    if python3 -c "import json; d=json.load(open('$SETTINGS')); assert 'statusLine' not in d" 2>/dev/null; then
-        # Add statusLine to existing settings
-        python3 -c "
-import json
-with open('$SETTINGS') as f:
-    d = json.load(f)
-d['statusLine'] = {'type': 'command', 'command': '$WRAPPER', 'padding': 0}
-with open('$SETTINGS', 'w') as f:
-    json.dump(d, f, indent=4)
-"
-        echo "Updated settings: $SETTINGS"
-    else
-        echo "Settings already has statusLine configured. Skipping."
-        echo "To update manually, set command to: $WRAPPER"
-    fi
-else
-    # Create new settings file
-    python3 -c "
-import json
-d = {'statusLine': {'type': 'command', 'command': '$WRAPPER', 'padding': 0}}
-with open('$SETTINGS', 'w') as f:
-    json.dump(d, f, indent=4)
-"
-    echo "Created settings: $SETTINGS"
-fi
+# Update settings.json — idempotent: overwrite statusLine only, preserving rest.
+python3 - <<PY
+import json, os
+from pathlib import Path
+
+settings_path = Path("$SETTINGS")
+wrapper       = "$WRAPPER"
+
+if settings_path.exists():
+    data = json.loads(settings_path.read_text())
+else:
+    data = {}
+
+current = data.get("statusLine")
+desired = {"type": "command", "command": wrapper, "padding": 0}
+
+if current == desired:
+    print(f"Settings already up to date: {settings_path}")
+else:
+    data["statusLine"] = desired
+    settings_path.write_text(json.dumps(data, indent=4))
+    print(f"Updated settings: {settings_path}")
+PY
 
 echo ""
 echo "Done! Restart Claude Code to see the status line."
 echo ""
-echo "Note: To enable quota monitoring, update CREDENTIALS_FILE in"
-echo "  $STATUSLINE"
-echo "to point to your .credentials.json file."
+echo "Credentials are auto-detected via CLAUDE_CONFIG_DIR (falls back to ~/.claude)."
