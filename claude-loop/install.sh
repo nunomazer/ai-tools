@@ -25,5 +25,12 @@ if ! echo ":$PATH:" | grep -q ":$BIN_DIR:"; then
     echo "  export PATH=\"$BIN_DIR:\$PATH\""
 fi
 
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ai-tools/claude-loop"
+mkdir -p "$CONFIG_DIR"
+echo ""
+echo "Config dir: $CONFIG_DIR"
+echo "Configure accounts (paths stay local, never committed):"
+echo "  claude-loop --add-account <name> --config-dir <CLAUDE_CONFIG_DIR>"
+echo "See claude-loop/accounts.example for the file format."
 echo ""
 echo "Done! Run: claude-loop --help"

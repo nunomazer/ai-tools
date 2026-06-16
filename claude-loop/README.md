@@ -3,8 +3,8 @@
 Runs a task in **headless Claude Code** (`-p`) autonomously and resiliently to quota. It's a *Ralph loop* (run the agent in a loop until the task is done) with built-in usage-limit handling: when the subscription hits its quota, the script **sleeps and resumes the same session** once the window resets. Multi-account aware on the same machine via `CLAUDE_CONFIG_DIR`.
 
 ```bash
-claude-loop --account brevenlaw \
-            --path /home/mazer/Workspaces/helpia \
+claude-loop --account work \
+            --path ~/Workspaces/my-project \
             --prompt "Implement the recorder mp4 export with tests." \
             --until 04:05
 ```
@@ -25,16 +25,24 @@ Upgrades: `git pull` in the repo (the symlink points at the versioned file).
 ## Usage
 
 ```
-claude-loop --account <account> --path <dir> --prompt "<work>" [options]
+claude-loop --path <dir> --prompt "<work>" [options]
 ```
 
 ### Required
 
 | Flag | Description |
 |------|-------------|
-| `-a, --account NAME` | Account: `personal`, `brevenlaw`, `brevenlaw-cto`, `softbinator` |
 | `-d, --path DIR` | Project directory the session runs in |
 | `-p, --prompt TEXT` | Initial instruction (the real start of the work) |
+
+### Config selection
+
+`--config-dir` wins over `--account`; both are optional.
+
+| Flag | Description |
+|------|-------------|
+| `-a, --account NAME` | Account name resolved from the accounts file (see [Accounts](#accounts)) |
+| `--config-dir DIR` | `CLAUDE_CONFIG_DIR` to use directly (skips the accounts file) |
 
 ### Wait when quota is hit
 
@@ -83,10 +91,10 @@ To resume **exactly** the brainstorm session, pin a UUID to it and pass the same
 ```bash
 # 1) Generate a UUID and brainstorm in the interactive session with that id; then EXIT (/exit)
 U=$(uuidgen)
-claude-brevenlaw --session-id "$U"     # your usual alias + fixed id, in the project directory
+claude --session-id "$U"     # your usual alias + fixed id, in the project directory
 
 # 2) Fire the loop resuming that same session (-r = already exists)
-claude-loop -a brevenlaw -d ~/Workspaces/helpia -r -S "$U" \
+claude-loop -a work -d ~/Workspaces/my-project -r -S "$U" \
             -p "Execute the plan we agreed on, starting at step 1." \
             --until 04:05
 ```
@@ -103,14 +111,17 @@ Without pinning a UUID, use just `-r` and the loop continues the **most recent**
 
 ## Accounts
 
-The account → `CLAUDE_CONFIG_DIR` mapping lives at the top of the script (`ACCOUNT_BASE_DIR`). Override the base with the `CLAUDE_LOOP_ACCOUNT_BASE` env var if needed.
+The account → `CLAUDE_CONFIG_DIR` mapping lives in the accounts file at `~/.config/ai-tools/claude-loop/accounts` (override with `CLAUDE_LOOP_ACCOUNTS_FILE`). Each line is `<name> = <CLAUDE_CONFIG_DIR path>`; `#` lines and blanks are ignored, and `~/` expands to `$HOME`. See [`accounts.example`](accounts.example) for the format.
 
-| Account | CLAUDE_CONFIG_DIR (basename) |
-|---------|------------------------------|
-| `personal` | `claude-personal-account` |
-| `brevenlaw` | `claude-brevenlaw-account` |
-| `brevenlaw-cto` | `claude-brevenlaw-account-cto` |
-| `softbinator` | `claude-softbinator-account` |
+```bash
+# Add an account (prompts for the dir if --config-dir is omitted)
+claude-loop --add-account work --config-dir ~/path/to/work-config
+
+# List configured accounts
+claude-loop --list-accounts
+```
+
+`--config-dir DIR` bypasses the file entirely and sets `CLAUDE_CONFIG_DIR` directly. When neither `--account` nor `--config-dir` is given, the current environment's `CLAUDE_CONFIG_DIR` (if any) is used.
 
 ## Logs
 
@@ -120,7 +131,7 @@ Written to `<log-dir>/<account>-<project>.full.log` (cumulative) and `.last` (la
 
 | Var | Default | Use |
 |-----|---------|-----|
-| `CLAUDE_LOOP_ACCOUNT_BASE` | Insync Drive folder | Base of the account folders |
+| `CLAUDE_LOOP_ACCOUNTS_FILE` | `~/.config/ai-tools/claude-loop/accounts` | Accounts file (name → `CLAUDE_CONFIG_DIR`) |
 | `CLAUDE_LOOP_BIN` | `~/.local/bin/claude` | Claude Code binary |
 | `CLAUDE_LOOP_LOG_DIR` | `~/.claude-loop-logs` | Log directory |
 | `CLAUDE_LOOP_BIN_DIR` | `~/.local/bin` | (install.sh) where to create the symlink |

@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+claude-loop/accounts
+docs/superpowers/

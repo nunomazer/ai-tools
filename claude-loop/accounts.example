@@ -1,0 +1,10 @@
+# claude-loop accounts — copy/adapt locally; this real file is gitignored.
+# Format: <name> = <CLAUDE_CONFIG_DIR path>   (parsed, not sourced)
+# Lines starting with # and blank lines are ignored. `~/` expands to $HOME.
+#
+# Configure via the CLI instead of editing by hand:
+#   claude-loop --add-account work --config-dir ~/path/to/work-config
+#
+# Examples:
+work     = ~/path/to/work-config
+personal = ~/.claude

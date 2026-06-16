@@ -8,12 +8,22 @@
 # to its output.
 #
 # Usage:
-#   claude-loop.sh --account <account> --path <dir> --prompt "<work>" [options]
+#   claude-loop.sh --path <dir> --prompt "<work>" [options]
 #
 # Required:
-#   -a, --account NAME    Account: personal | brevenlaw | brevenlaw-cto | softbinator
 #   -d, --path DIR        Project directory the session runs in
 #   -p, --prompt TEXT     Initial instruction (the real start of the work)
+#
+# Config selection (optional; --config-dir wins over --account):
+#   -a, --account NAME    Account name resolved from the accounts file
+#                         (~/.config/ai-tools/claude-loop/accounts). Optional.
+#       --config-dir DIR  CLAUDE_CONFIG_DIR to use directly (skips the accounts file)
+#
+# Account management:
+#       --add-account NAME [--config-dir DIR]
+#                         Add an account to the accounts file (prompts for the
+#                         config dir if --config-dir is omitted) and exit
+#       --list-accounts   List configured accounts and exit
 #
 # Wait when quota is hit (pick one; --until wins on the first wait):
 #   -s, --sleep DUR       Duration of each wait cycle (default: 30m)
@@ -38,11 +48,10 @@
 #                         accept = --permission-mode acceptEdits (more restrictive)
 #   -h, --help            This help
 #
-# Accounts map to CLAUDE_CONFIG_DIR via ACCOUNT_BASE_DIR below.
+# Accounts map to CLAUDE_CONFIG_DIR via the accounts file. See --add-account.
 #
 set -uo pipefail
 
-ACCOUNT_BASE_DIR="${CLAUDE_LOOP_ACCOUNT_BASE:-$HOME/Insync/ademir.mazer.jr@gmail.com/Google Drive/claude}"
 CLAUDE_BIN="${CLAUDE_LOOP_BIN:-$HOME/.local/bin/claude}"
 
 ACCOUNT=""
@@ -57,6 +66,11 @@ LOG_DIR=""
 MAX_ITERS=300
 MARKER="<<<TASK_COMPLETE>>>"
 PERM="bypass"
+CONFIG_DIR_ARG=""
+ADD_ACCOUNT=""
+DO_LIST=0
+CFG_DIR=""
+ACCOUNTS_FILE="${CLAUDE_LOOP_ACCOUNTS_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/ai-tools/claude-loop/accounts}"
 
 usage() {
     awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1 && !/^#/{exit}' "$0"
@@ -73,6 +87,101 @@ gen_uuid() {
     fi
 }
 
+expand_tilde() {
+    local p="$1"
+    case "$p" in
+        "~")   printf '%s' "$HOME" ;;
+        "~/"*) printf '%s' "$HOME/${p#\~/}" ;;
+        *)     printf '%s' "$p" ;;
+    esac
+}
+
+account_path() {
+    local want="$1" line name path
+    [ -f "$ACCOUNTS_FILE" ] || return 1
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        case "$line" in ''|'#'*) continue ;; esac
+        case "$line" in *'='*) ;; *) continue ;; esac
+        name="${line%%=*}"
+        path="${line#*=}"
+        name="${name#"${name%%[![:space:]]*}"}"; name="${name%"${name##*[![:space:]]}"}"
+        path="${path#"${path%%[![:space:]]*}"}"; path="${path%"${path##*[![:space:]]}"}"
+        if [ "$name" = "$want" ]; then
+            expand_tilde "$path"
+            return 0
+        fi
+    done < "$ACCOUNTS_FILE"
+    return 1
+}
+
+add_account() {
+    local name="$1" raw="$2" dir ans tmp line trimmed lname
+    [ -n "$name" ] || { echo "Error: --add-account requires a name" >&2; exit 1; }
+    case "$name" in
+        *'='*|*$'\n'*) echo "Error: account name must not contain '=' or newlines" >&2; exit 1 ;;
+    esac
+    if [ -z "$raw" ]; then
+        if [ -t 0 ]; then
+            printf 'Config dir for "%s": ' "$name" >&2
+            IFS= read -r raw
+        else
+            echo "Error: --config-dir is required for --add-account when not interactive" >&2
+            exit 1
+        fi
+    fi
+    dir="$(expand_tilde "$raw")"
+    [ -d "$dir" ] || { echo "Error: config dir does not exist: $dir" >&2; exit 1; }
+
+    mkdir -p "$(dirname "$ACCOUNTS_FILE")" || { echo "Error: could not create $(dirname "$ACCOUNTS_FILE")" >&2; exit 1; }
+    touch "$ACCOUNTS_FILE"
+
+    if account_path "$name" >/dev/null 2>&1; then
+        if [ -t 0 ]; then
+            printf 'Account "%s" already exists. Overwrite? [y/N] ' "$name" >&2
+            IFS= read -r ans
+            case "$ans" in y|Y) ;; *) echo "Aborted." >&2; exit 1 ;; esac
+        else
+            echo "Error: account \"$name\" already exists (refusing to overwrite non-interactively)" >&2
+            exit 1
+        fi
+        tmp="$(mktemp)"
+        trap 'rm -f "$tmp"' EXIT
+        while IFS= read -r line || [ -n "$line" ]; do
+            trimmed="${line#"${line%%[![:space:]]*}"}"
+            case "$trimmed" in ''|'#'*) printf '%s\n' "$line" >> "$tmp"; continue ;; esac
+            case "$trimmed" in *'='*) ;; *) printf '%s\n' "$line" >> "$tmp"; continue ;; esac
+            lname="${trimmed%%=*}"; lname="${lname#"${lname%%[![:space:]]*}"}"; lname="${lname%"${lname##*[![:space:]]}"}"
+            [ "$lname" = "$name" ] && continue
+            printf '%s\n' "$line" >> "$tmp"
+        done < "$ACCOUNTS_FILE"
+        mv "$tmp" "$ACCOUNTS_FILE" || { echo "Error: could not rewrite accounts file" >&2; exit 1; }
+        trap - EXIT
+    fi
+
+    printf '%s = %s\n' "$name" "$raw" >> "$ACCOUNTS_FILE"
+    echo "Saved account \"$name\" -> $raw" >&2
+}
+
+list_accounts() {
+    if [ ! -f "$ACCOUNTS_FILE" ]; then
+        echo "No accounts configured. Add one with: claude-loop --add-account <name> --config-dir <dir>" >&2
+        return 0
+    fi
+    local line trimmed name found=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        trimmed="${line#"${line%%[![:space:]]*}"}"
+        case "$trimmed" in ''|'#'*) continue ;; esac
+        case "$trimmed" in *'='*) ;; *) continue ;; esac
+        name="${trimmed%%=*}"
+        name="${name#"${name%%[![:space:]]*}"}"; name="${name%"${name##*[![:space:]]}"}"
+        printf '%s\n' "$name"
+        found=1
+    done < "$ACCOUNTS_FILE"
+    [ "$found" = 1 ] || echo "No accounts configured. Add one with: claude-loop --add-account <name> --config-dir <dir>" >&2
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         -a|--account)      ACCOUNT="$2"; shift 2 ;;
@@ -87,12 +196,24 @@ while [ $# -gt 0 ]; do
         -m|--max-iters)    MAX_ITERS="$2"; shift 2 ;;
         --marker)          MARKER="$2"; shift 2 ;;
         --perm)            PERM="$2"; shift 2 ;;
+        --config-dir)      CONFIG_DIR_ARG="$2"; shift 2 ;;
+        --add-account)     ADD_ACCOUNT="$2"; shift 2 ;;
+        --list-accounts)   DO_LIST=1; shift ;;
         -h|--help)         usage 0 ;;
         *) echo "Unknown argument: $1" >&2; usage 1 ;;
     esac
 done
 
-[ -n "$ACCOUNT" ] || { echo "Error: --account is required" >&2; usage 1; }
+if [ "$DO_LIST" = 1 ]; then
+    list_accounts
+    exit 0
+fi
+
+if [ -n "$ADD_ACCOUNT" ]; then
+    add_account "$ADD_ACCOUNT" "$CONFIG_DIR_ARG"
+    exit 0
+fi
+
 [ -n "$WORKDIR" ] || { echo "Error: --path is required" >&2; usage 1; }
 [ -n "$PROMPT" ]  || { echo "Error: --prompt is required" >&2; usage 1; }
 
@@ -107,14 +228,20 @@ elif [ -n "$SESSION" ] && ! [[ "$SESSION" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9
     echo "Error: --session must be a valid UUID (or 'auto'): $SESSION" >&2; exit 1
 fi
 
-case "$ACCOUNT" in
-    personal)      CFG_DIR="$ACCOUNT_BASE_DIR/claude-personal-account" ;;
-    brevenlaw)     CFG_DIR="$ACCOUNT_BASE_DIR/claude-brevenlaw-account" ;;
-    brevenlaw-cto) CFG_DIR="$ACCOUNT_BASE_DIR/claude-brevenlaw-account-cto" ;;
-    softbinator)   CFG_DIR="$ACCOUNT_BASE_DIR/claude-softbinator-account" ;;
-    *) echo "Unknown account: $ACCOUNT" >&2; exit 1 ;;
-esac
-[ -d "$CFG_DIR" ]    || { echo "Config dir does not exist: $CFG_DIR" >&2; exit 1; }
+if [ -n "$CONFIG_DIR_ARG" ] && [ -n "$ACCOUNT" ]; then
+    echo "Error: pass either --account or --config-dir, not both" >&2; exit 1
+fi
+
+if [ -n "$CONFIG_DIR_ARG" ]; then
+    CFG_DIR="$(expand_tilde "$CONFIG_DIR_ARG")"
+    [ -d "$CFG_DIR" ] || { echo "Config dir does not exist: $CFG_DIR" >&2; exit 1; }
+elif [ -n "$ACCOUNT" ]; then
+    CFG_DIR="$(account_path "$ACCOUNT")" || { echo "Error: unknown account '$ACCOUNT' (not in $ACCOUNTS_FILE)" >&2; exit 1; }
+    [ -d "$CFG_DIR" ] || { echo "Config dir for account '$ACCOUNT' does not exist: $CFG_DIR" >&2; exit 1; }
+elif [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    CFG_DIR="$CLAUDE_CONFIG_DIR"
+fi
+
 [ -d "$WORKDIR" ]    || { echo "Path does not exist: $WORKDIR" >&2; exit 1; }
 [ -x "$CLAUDE_BIN" ] || { echo "claude not found/executable: $CLAUDE_BIN" >&2; exit 1; }
 
@@ -124,7 +251,7 @@ case "$PERM" in
     *) echo "Invalid perm (use bypass|accept): $PERM" >&2; exit 1 ;;
 esac
 
-export CLAUDE_CONFIG_DIR="$CFG_DIR"
+[ -n "$CFG_DIR" ] && export CLAUDE_CONFIG_DIR="$CFG_DIR"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 # shellcheck disable=SC1091
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && nvm use node >/dev/null 2>&1
@@ -133,7 +260,14 @@ cd "$WORKDIR" || exit 1
 
 LOG_DIR="${LOG_DIR:-${CLAUDE_LOOP_LOG_DIR:-$HOME/.claude-loop-logs}}"
 mkdir -p "$LOG_DIR" || { echo "Could not create log-dir: $LOG_DIR" >&2; exit 1; }
-STAMP="${ACCOUNT}-$(basename "$WORKDIR")"
+if [ -n "$ACCOUNT" ]; then
+    LABEL="$ACCOUNT"
+elif [ -n "$CFG_DIR" ]; then
+    LABEL="$(basename "$CFG_DIR")"
+else
+    LABEL="default"
+fi
+STAMP="${LABEL}-$(basename "$WORKDIR")"
 LAST_LOG="$LOG_DIR/${STAMP}.last"
 FULL_LOG="$LOG_DIR/${STAMP}.full.log"
 
@@ -157,8 +291,8 @@ seconds_until() {
     echo $((target_s - now_s))
 }
 
-log "=== LOOP START | account=$ACCOUNT path=$WORKDIR perm=$PERM sleep=$SLEEP_DUR until=${UNTIL:-—} session=${SESSION:-—} resume=$RESUME_FIRST ==="
-log "CLAUDE_CONFIG_DIR=$CFG_DIR | LOG_DIR=$LOG_DIR"
+log "=== LOOP START | account=${ACCOUNT:-—} cfg=${CFG_DIR:-<default>} path=$WORKDIR perm=$PERM sleep=$SLEEP_DUR until=${UNTIL:-—} session=${SESSION:-—} resume=$RESUME_FIRST ==="
+log "CLAUDE_CONFIG_DIR=${CFG_DIR:-<default ~/.claude>} | LOG_DIR=$LOG_DIR"
 
 iter=0
 first=1
