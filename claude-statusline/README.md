@@ -132,7 +132,8 @@ Percentage values use colors to indicate usage level:
 | ⏰ | **Session (5h)** | `⏰ Session ↺2h30m (20:45) ██████░░░░ 55%` | 5-hour window usage. Shows remaining time and local reset time in parentheses |
 | 📅 | **Week (7d)** | `📅 Week ↺fri 14:00 ████░░░░░░ 35%` | 7-day window usage. Shows weekday and time of reset |
 | — | **Per-model** | `opus ██████░░░░ 60%` | Per-model 7-day usage (opus, sonnet, haiku). Only shown when data is available |
-| — | **Extra usage** | `extra ██░░░░ 18% $3.60/$20.00` | Pay-as-you-go credits, if enabled. Shows usage percentage and USD amounts |
+| — | **Extra usage** | `extra ██░░░░ 18% $3.60/$20.00` | Pay-as-you-go credits, if enabled. Shows usage percentage and USD amounts (the API sends minor units; `decimal_places` converts them) |
+| ☁️ | **Amazon Bedrock** | `☁️ Bedrock · rw-mfa · us-east-1 · no plan quota` | Replaces the whole line when `CLAUDE_CODE_USE_BEDROCK` is set: the session bills the AWS account, so the subscription quota does not apply. Shows `AWS_PROFILE` and `AWS_REGION` |
 
 Each item displays a progress bar using the same color coding (green/yellow/red).
 

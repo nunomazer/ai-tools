@@ -197,6 +197,15 @@ def get_output_style(data: dict) -> str:
     return style if style and style != "default" else ""
 
 
+def get_bedrock_target() -> tuple[str, str] | None:
+    """Return (AWS profile, region) when the session runs on Amazon Bedrock, else None."""
+    if os.environ.get("CLAUDE_CODE_USE_BEDROCK", "").lower() not in ("1", "true"):
+        return None
+    profile = os.environ.get("AWS_PROFILE") or "default"
+    region  = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "?"
+    return profile, region
+
+
 # ── Quota ─────────────────────────────────────────────────────────────────────
 
 def get_access_token() -> str | None:
@@ -370,12 +379,13 @@ def build_line2(quota: dict | None) -> str:
         u = iguana.get("utilization", 0)
         segments.append(f"🦎 {bar(u, 6)} {color_for(u)}{fmt_pct(u)}{RESET}")
 
-    # Extra usage (pay-as-you-go credits) — only when enabled
+    # Extra usage (pay-as-you-go credits) — only when enabled; amounts come in minor units
     extra = quota.get("extra_usage") or {}
     if extra.get("is_enabled"):
+        scale = 10 ** (extra.get("decimal_places") or 0)
         u     = extra.get("utilization") or 0
-        used  = extra.get("used_credits") or 0
-        limit = extra.get("monthly_limit") or 0
+        used  = (extra.get("used_credits") or 0) / scale
+        limit = (extra.get("monthly_limit") or 0) / scale
         segments.append(
             f"extra {bar(u, 6)} {color_for(u)}{fmt_pct(u)}{RESET} "
             f"{DIM}${used:.2f}/${limit:.2f}{RESET}"
@@ -384,12 +394,21 @@ def build_line2(quota: dict | None) -> str:
     return SEP.join(segments) if segments else f"{DIM}quota: no data{RESET}"
 
 
+def build_line2_bedrock(profile: str, region: str) -> str:
+    """Bedrock sessions bill the AWS account, so the subscription quota does not apply."""
+    return SEP.join([f"☁️  {BOLD}Bedrock{RESET}", profile, region, f"{DIM}no plan quota{RESET}"])
+
+
 def main() -> None:
     data  = read_json_input()
     # Save input for debugging
     (CACHE_DIR / "debug_input.json").write_text(json.dumps(data, indent=2))
-    quota = get_quota() or quota_from_input(data)
     print(build_line1(data))
+    bedrock = get_bedrock_target()
+    if bedrock:
+        print(build_line2_bedrock(*bedrock))
+        return
+    quota = get_quota() or quota_from_input(data)
     print(build_line2(quota))
 
 
